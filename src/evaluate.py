@@ -140,3 +140,40 @@ def plot_volatility(df: pd.DataFrame, ax=None):
     ax.legend()
     return ax
 
+
+def plot_cumulative_returns(strategy_eq: pd.Series, bh_eq: pd.Series, ax=None):
+    """Plot cumulative returns for a strategy against buy and hold."""
+
+    plt = _matplotlib()
+    if ax is None:
+        _, ax = plt.subplots(figsize=(12, 6))
+
+    common = strategy_eq.index.intersection(bh_eq.index)
+    strategy_common = strategy_eq.loc[common]
+    bh_common = bh_eq.loc[common]
+    ax.plot(common, strategy_common / strategy_common.iloc[0] - 1, label="Strategy", color="#1f77b4", linewidth=1.8)
+    ax.plot(common, bh_common / bh_common.iloc[0] - 1, label="Buy and hold", color="#ff7f0e", linewidth=1.8)
+    ax.set_title("Cumulative Returns")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Cumulative return")
+    ax.grid(True, alpha=0.25)
+    ax.legend()
+    return ax
+
+
+def plot_strategy_comparison(series_map: dict[str, pd.Series], ax=None):
+    """Plot multiple strategy equity series on the same axes."""
+
+    plt = _matplotlib()
+    if ax is None:
+        _, ax = plt.subplots(figsize=(12, 6))
+
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd", "#d62728", "#17becf"]
+    for i, (label, series) in enumerate(series_map.items()):
+        ax.plot(series.index, series, label=label, color=colors[i % len(colors)], linewidth=1.8)
+    ax.set_title("Strategy Comparison")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Portfolio Value")
+    ax.grid(True, alpha=0.25)
+    ax.legend()
+    return ax

@@ -23,7 +23,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data_loader import compute_stats, load_data, make_synthetic
-from src.evaluate import buy_and_hold, metrics
+from src.evaluate import (
+    buy_and_hold,
+    metrics,
+    plot_cumulative_returns,
+    plot_equity_vs_bh,
+    plot_price_signals,
+    plot_strategy_comparison,
+    plot_volume,
+    plot_volatility,
+)
 from src.execution import apply_spread, simulate_limit, simulate_market
 from src.indicators import add_returns, add_volume_avg, add_volatility
 from src.signals import ma_crossover, mean_reversion
@@ -250,6 +259,13 @@ def build_plots(analysis: dict[str, object]) -> dict[str, Path]:
     assert isinstance(ma_bh, pd.Series)
     assert isinstance(mr_equity, pd.Series)
 
+    def _save_plot(ax, path: Path) -> None:
+        fig = ax.figure
+        fig.savefig(path, bbox_inches="tight")
+        import matplotlib.pyplot as plt
+
+        plt.close(fig)
+
     plots = {
         "price": PLOTS_DIR / "price_ma_signals.png",
         "volume": PLOTS_DIR / "volume_analysis.png",
@@ -259,50 +275,16 @@ def build_plots(analysis: dict[str, object]) -> dict[str, Path]:
         "strategy": PLOTS_DIR / "strategy_comparison.png",
     }
 
-    buy_dates = ma_df.index[ma_df["signal"] == 1]
-    sell_dates = ma_df.index[ma_df["signal"] == -1]
-    draw_line_chart(
-        plots["price"],
-        "Close Price, Moving Averages, and Signals",
-        {
-            "Close": ma_df["close"],
-            "Short MA": ma_df["ma_short"],
-            "Long MA": ma_df["ma_long"],
-        },
-        "Price",
-        markers=[
-            {"dates": buy_dates, "values": ma_df["close"], "color": "#16a34a", "shape": "up"},
-            {"dates": sell_dates, "values": ma_df["close"], "color": "#dc2626", "shape": "down"},
-        ],
-    )
-    draw_bar_chart(plots["volume"], "Volume and Rolling Average", ma_df["volume"], ma_df["volume_avg"])
-    draw_line_chart(
-        plots["volatility"],
-        "Rolling Volatility",
-        {"20-day volatility": ma_df["vol"]},
-        "Daily return standard deviation",
-        width=1200,
-        height=560,
-    )
-    draw_line_chart(
-        plots["equity"],
-        "Strategy Equity vs Buy and Hold",
-        {"MA crossover": ma_equity, "Buy and hold": ma_bh},
-        "Portfolio value",
-    )
-    cumulative_strategy = ma_equity / ma_equity.iloc[0] - 1
-    cumulative_bh = ma_bh / ma_bh.iloc[0] - 1
-    draw_line_chart(
-        plots["cumulative"],
-        "Cumulative Returns",
-        {"MA crossover": cumulative_strategy, "Buy and hold": cumulative_bh},
-        "Cumulative return",
-    )
-    draw_line_chart(
+    _save_plot(plot_price_signals(ma_df), plots["price"])
+    _save_plot(plot_volume(ma_df), plots["volume"])
+    _save_plot(plot_volatility(ma_df), plots["volatility"])
+    _save_plot(plot_equity_vs_bh(ma_equity, ma_bh), plots["equity"])
+    _save_plot(plot_cumulative_returns(ma_equity, ma_bh), plots["cumulative"])
+    _save_plot(
+        plot_strategy_comparison(
+            {"MA crossover": ma_equity, "Mean reversion": mr_equity, "Buy and hold": ma_bh}
+        ),
         plots["strategy"],
-        "Strategy Comparison",
-        {"MA crossover": ma_equity, "Mean reversion": mr_equity, "Buy and hold": ma_bh},
-        "Portfolio value",
     )
     return plots
 
@@ -356,14 +338,10 @@ def write_metrics_csv(analysis: dict[str, object]) -> Path:
     return path
 
 
-def _image_markdown(path: Path, alt: str) -> str:
-    rel = Path("..") / path.relative_to(ROOT)
-    return f"![{alt}]({rel.as_posix()})"
-
-
 def build_notebook(stats: dict[str, object], analysis: dict[str, object], plots: dict[str, Path]) -> Path:
     NOTEBOOK_DIR.mkdir(exist_ok=True)
     path = NOTEBOOK_DIR / "project_notebook.ipynb"
+    _ = stats, plots
     ma_metrics = analysis["ma_metrics"]
     mr_metrics = analysis["mr_metrics"]
     ma_bh = analysis["ma_bh"]
@@ -377,25 +355,6 @@ def build_notebook(stats: dict[str, object], analysis: dict[str, object], plots:
     assert isinstance(no_fill_trades, pd.DataFrame)
     assert isinstance(fill_trades, pd.DataFrame)
 
-    summary_text = (
-        f"Rows: {stats['rows']}\n"
-        f"Date range: {stats['start_date']} to {stats['end_date']}\n"
-        f"Mean close: ${float(stats['close_mean']):,.2f}\n"
-        f"Average volume: {float(stats['volume_mean']):,.0f}\n"
-    )
-    strategy_text = (
-        f"MA final equity: {_format_money(float(ma_metrics['final_equity']))}\n"
-        f"MA return: {_format_pct(float(ma_metrics['strategy_return']))}\n"
-        f"Mean Reversion final equity: {_format_money(float(mr_metrics['final_equity']))}\n"
-        f"Mean Reversion return: {_format_pct(float(mr_metrics['strategy_return']))}\n"
-        f"Buy and Hold final equity: {_format_money(float(ma_bh.iloc[-1]))}\n"
-        f"Market trades: {len(ma_trades)}\n"
-    )
-    limit_text = (
-        f"Limit no-fill trades: {len(no_fill_trades)}\n"
-        f"Limit fill trades: {len(fill_trades)}\n"
-    )
-
     cells = [
         {
             "cell_type": "markdown",
@@ -408,21 +367,39 @@ def build_notebook(stats: dict[str, object], analysis: dict[str, object], plots:
         },
         {
             "cell_type": "code",
-            "execution_count": 1,
+            "execution_count": None,
             "metadata": {},
-            "outputs": [{"name": "stdout", "output_type": "stream", "text": [summary_text]}],
+            "outputs": [],
             "source": [
                 "from pathlib import Path\n",
                 "import sys\n",
                 "\n",
-                "ROOT = Path.cwd().parent if Path.cwd().name == 'notebook' else Path.cwd()\n",
+                "import matplotlib.pyplot as plt\n",
+                "\n",
+                "def _find_repo_root(start: Path | None = None) -> Path:\n",
+                "    start = (start or Path.cwd()).resolve()\n",
+                "    for candidate in [start, *start.parents]:\n",
+                "        if (candidate / 'src').exists() and (candidate / 'data').exists():\n",
+                "            return candidate\n",
+                "    return start\n",
+                "\n",
+                "ROOT = _find_repo_root()\n",
                 "sys.path.insert(0, str(ROOT))\n",
                 "\n",
                 "from src.data_loader import load_data, compute_stats\n",
                 "from src.indicators import add_returns, add_volatility, add_volume_avg\n",
                 "from src.signals import ma_crossover, mean_reversion\n",
                 "from src.execution import simulate_market, simulate_limit, apply_spread\n",
-                "from src.evaluate import buy_and_hold, metrics\n",
+                "from src.evaluate import (\n",
+                "    buy_and_hold,\n",
+                "    metrics,\n",
+                "    plot_cumulative_returns,\n",
+                "    plot_equity_vs_bh,\n",
+                "    plot_price_signals,\n",
+                "    plot_strategy_comparison,\n",
+                "    plot_volume,\n",
+                "    plot_volatility,\n",
+                ")\n",
                 "\n",
                 "STARTING_CASH = 10_000\n",
                 "SPREAD = 0.10\n",
@@ -441,20 +418,18 @@ def build_notebook(stats: dict[str, object], analysis: dict[str, object], plots:
                 "## Market Data Processing\n",
                 "\n",
                 "The dataset follows the OHLCV contract and uses business-day timestamps. Missing or invalid values are cleaned before indicators are calculated.\n",
-                "\n",
-                _image_markdown(plots["volume"], "Volume analysis"),
             ],
         },
         {
             "cell_type": "code",
-            "execution_count": 2,
+            "execution_count": None,
             "metadata": {},
-            "outputs": [{"name": "stdout", "output_type": "stream", "text": [strategy_text]}],
+            "outputs": [],
             "source": [
                 "base = add_volume_avg(add_volatility(add_returns(df), window=20), window=20)\n",
                 "ma_df = ma_crossover(base, short=20, long=50)\n",
                 "ma_trades, ma_equity = simulate_market(ma_df, cash=STARTING_CASH, spread=SPREAD)\n",
-                "bh_equity = buy_and_hold(ma_df, cash=STARTING_CASH)\n",
+                "ma_bh = buy_and_hold(ma_df, cash=STARTING_CASH)\n",
                 "ma_results = metrics(ma_equity, ma_trades, ma_df)\n",
                 "\n",
                 "mr_df = mean_reversion(base, window=20, z=1.35)\n",
@@ -465,8 +440,11 @@ def build_notebook(stats: dict[str, object], analysis: dict[str, object], plots:
                 "print(f\"MA return: {ma_results['strategy_return']:.2%}\")\n",
                 "print(f\"Mean Reversion final equity: ${mr_results['final_equity']:,.2f}\")\n",
                 "print(f\"Mean Reversion return: {mr_results['strategy_return']:.2%}\")\n",
-                "print(f\"Buy and Hold final equity: ${bh_equity.iloc[-1]:,.2f}\")\n",
+                "print(f\"Buy and Hold final equity: ${ma_bh.iloc[-1]:,.2f}\")\n",
                 "print(f\"Market trades: {len(ma_trades)}\")\n",
+                "\n",
+                "plot_volume(base)\n",
+                "plt.show()\n",
             ],
         },
         {
@@ -476,10 +454,19 @@ def build_notebook(stats: dict[str, object], analysis: dict[str, object], plots:
                 "## Indicators and Signals\n",
                 "\n",
                 "The Moving Average Crossover strategy buys when the short moving average rises above the long moving average and sells when it falls back below. The Mean Reversion strategy buys when price is far below a rolling mean and exits when price is far above it.\n",
+            ],
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "plot_price_signals(ma_df)\n",
+                "plt.show()\n",
                 "\n",
-                _image_markdown(plots["price"], "Price with moving averages and signals"),
-                "\n\n",
-                _image_markdown(plots["volatility"], "Rolling volatility"),
+                "plot_volatility(ma_df)\n",
+                "plt.show()\n",
             ],
         },
         {
@@ -489,20 +476,27 @@ def build_notebook(stats: dict[str, object], analysis: dict[str, object], plots:
                 "## Execution and Evaluation\n",
                 "\n",
                 "Market orders fill at the ask for BUY orders and at the bid for SELL orders. The strategy shifts position by one bar so a signal observed today can only trade on the next available bar.\n",
-                "\n",
-                _image_markdown(plots["equity"], "Equity vs buy and hold"),
-                "\n\n",
-                _image_markdown(plots["cumulative"], "Cumulative returns"),
-                "\n\n",
-                _image_markdown(plots["strategy"], "Strategy comparison"),
             ],
         },
         {
             "cell_type": "code",
-            "execution_count": 3,
+            "execution_count": None,
             "metadata": {},
-            "outputs": [{"name": "stdout", "output_type": "stream", "text": [limit_text]}],
+            "outputs": [],
             "source": [
+                "plot_equity_vs_bh(ma_equity, ma_bh)\n",
+                "plt.show()\n",
+                "\n",
+                "plot_cumulative_returns(ma_equity, ma_bh)\n",
+                "plt.show()\n",
+                "\n",
+                "plot_strategy_comparison({\n",
+                "    'MA crossover': ma_equity,\n",
+                "    'Mean reversion': mr_equity,\n",
+                "    'Buy and hold': ma_bh,\n",
+                "})\n",
+                "plt.show()\n",
+                "\n",
                 "spread_df = apply_spread(ma_df, SPREAD)\n",
                 "no_fill_limit = spread_df['ask'].min() - 1\n",
                 "no_fill_trades, _ = simulate_limit(spread_df, no_fill_limit, side='buy', cash=STARTING_CASH)\n",
